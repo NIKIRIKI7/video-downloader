@@ -1,18 +1,21 @@
 """
-Модуль утилит проекта. Здесь можно размещать вспомогательные функции,
-например: логирование, проверку директорий, загрузку конфигов и т.д.
+Модуль утилит проекта. Здесь можно размещать вспомогательные функции.
 """
 
 import os
+from typing import Optional
 
-def ensure_dir(path):
-    """Создает директорию, если она не существует."""
+def ensure_dir(path: str) -> None:
+    """
+    Создает директорию по указанному пути, если она не существует.
+
+    Args:
+        path: Путь к директории.
+    """
     if not os.path.isdir(path):
-        os.makedirs(path)
-
-def find_file_by_prefix(prefix, extension=".mp3", directory="."):
-    """Ищет первый файл с заданным префиксом и расширением в директории."""
-    for fname in os.listdir(directory):
-        if fname.startswith(prefix) and fname.endswith(extension):
-            return os.path.join(directory, fname)
-    return None
+        try:
+            os.makedirs(path)
+            print(f"Создана директория: {path}") # Добавим лог для ясности
+        except OSError as e:
+            print(f"Ошибка при создании директории {path}: {e}")
+            # В реальном приложении здесь можно выбросить исключение или обработать иначе
