@@ -1,7 +1,6 @@
 from commands.base_command import ActionCommand
 from model.processing_context import ProcessingContext
 from utils.utils import ensure_dir, get_tool_path
-import constants
 import subprocess
 import json
 import os
@@ -23,6 +22,7 @@ class DownloadMetadata(ActionCommand):
 
         try:
             cmd = [yt_dlp_path, "--no-playlist", "--dump-single-json", "--skip-download", url]
+            # Set encoding explicitly for check_output
             result = subprocess.check_output(cmd, text=True, encoding='utf-8', stderr=subprocess.PIPE)
             data = json.loads(result)
 
@@ -46,11 +46,13 @@ class DownloadMetadata(ActionCommand):
             context.description = description
             context.tags = tags
 
-            # Save metadata to file
-            meta_path = context.get_metadata_filepath()
+            # Save metadata to file - uses context method which now uses defaults/settings
+            # Pass None for lang to get original metadata path
+            meta_path = context.get_metadata_filepath(lang=None)
             if not meta_path:
                  self.log("[ERROR] Cannot determine metadata file path (base name missing?).")
-                 return # Or raise error?
+                 # Raise error as this path is critical
+                 raise ValueError("Metadata file path could not be determined (base name missing).")
 
             context.metadata_path = meta_path # Store path in context
             self.log(f"[INFO] Saving metadata to: {meta_path}")
@@ -63,17 +65,21 @@ class DownloadMetadata(ActionCommand):
                 self.log("[INFO] Metadata saved successfully.")
             except IOError as e:
                 self.log(f"[ERROR] Failed to write metadata file {meta_path}: {e}")
-                # Decide if this is critical enough to raise
-                # raise
+                # Propagate the error
+                raise
 
         except subprocess.CalledProcessError as e:
             self.log(f"[ERROR] yt-dlp failed while fetching metadata: {e}")
             self.log(f"[ERROR] Command: {' '.join(e.cmd)}")
-            self.log(f"[ERROR] Stderr: {e.stderr}")
+            # Decode stderr for logging if captured as bytes
+            stderr_output = e.stderr.decode('utf-8', errors='replace') if isinstance(e.stderr, bytes) else e.stderr
+            self.log(f"[ERROR] Stderr: {stderr_output}")
             raise
         except json.JSONDecodeError as e:
             self.log(f"[ERROR] Failed to decode JSON from yt-dlp: {e}")
-            self.log(f"[DEBUG] Received data (partial): {result[:500]}...")
+            # Ensure 'result' is defined before logging
+            log_data = result[:500] if 'result' in locals() else "N/A"
+            self.log(f"[DEBUG] Received data (partial): {log_data}...")
             raise
         except Exception as e:
             self.log(f"[ERROR] Unexpected error downloading metadata: {type(e).__name__} - {e}")
