@@ -5,7 +5,7 @@
 ## Установка
 1. Склонируйте репозиторий:
    ```bash
-   git clone https://github.com/your-repo/video-downloader.git
+   git clone https://github.com/NIKIRIKI7/video-downloader.git
    ```
 2. Перейдите в директорию проекта:
    ```bash
