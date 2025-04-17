@@ -14,6 +14,7 @@ __pycache__/
 merge-py.sh
 combined.txt
 video
+video_output
 # Distribution / packaging
 .Python
 build/
