@@ -68,7 +68,7 @@ class MergeAudio(ActionCommand):
         self.log(f"[INFO] Merging audio tracks into: {output_path}")
         self.log(f"[DEBUG] Video Input: {video_path}")
         self.log(f"[DEBUG] Audio Input: {yandex_audio_path}")
-        self.log(f"[DEBUG] Original Volume: {original_volume}") # Log volume setting
+        self.log(f"[DEBUG] Original Volume: {original_volume}") # Log volume setting (already represents factor)
         self.log(f"[DEBUG] Added Volume: {added_volume}")     # Log volume setting
         self.log(f"[DEBUG] Output Codec: {merged_audio_codec}")
 
@@ -80,6 +80,7 @@ class MergeAudio(ActionCommand):
             "-i", yandex_audio_path,      # Input 1: Added audio
             "-filter_complex",
                 # Use volume settings directly from context variables
+                # These already represent the desired volume factor (e.g., 0.4 = 40%, 1.0 = 100%)
                 f"[0:a]volume={original_volume}[a0];"
                 f"[1:a]volume={added_volume}[a1];"
                 f"[a0][a1]amix=inputs=2:duration=first[aout]", # Mix streams, duration based on first input (video)
