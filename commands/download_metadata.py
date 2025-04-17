@@ -1,84 +1,80 @@
 from commands.base_command import ActionCommand
-from utils import ensure_dir
-from constants import VIDEO_DIR
+from model.processing_context import ProcessingContext
+from utils.utils import ensure_dir, get_tool_path
+import constants
 import subprocess
 import json
 import os
-from typing import Dict, Any
+import re # For cleaning filenames
 
 class DownloadMetadata(ActionCommand):
-    """Команда для загрузки метаданных видео (название, описание, теги) с помощью yt-dlp."""
+    """Command to download video metadata using yt-dlp."""
 
-    def execute(self, context: Dict[str, Any]) -> None:
+    def execute(self, context: ProcessingContext) -> None:
         """
-        Загружает метаданные видео и сохраняет их в файл .meta.txt.
-        Также определяет базовое имя файла ('base') для использования другими командами,
-        приоритетно используя ID видео.
-
-        Args:
-            context: Словарь контекста. Ожидает 'url'.
-                     Обновляет 'base', 'title', 'description', 'tags'.
-
-        Raises:
-            subprocess.CalledProcessError: Если команда yt-dlp завершилась с ошибкой.
-            FileNotFoundError: Если yt-dlp не установлен или не найден в PATH.
-            json.JSONDecodeError: Если вывод yt-dlp не является валидным JSON.
-            KeyError: Если в контексте отсутствует 'url'.
+        Downloads metadata, saves it, and populates context.base, title, etc.
         """
-        url = context['url'] # Может вызвать KeyError, если URL не передан - это ожидаемо
-        ensure_dir(VIDEO_DIR) # Убедимся, что директория существует
+        url = context.url
+        output_dir = context.output_dir
+        ensure_dir(output_dir)
 
-        self.log(f"Запрос метаданных для URL: {url}")
+        self.log("[INFO] Requesting metadata...")
+        yt_dlp_path = get_tool_path('yt-dlp') # Raises FileNotFoundError if not found
+
         try:
-            # Используем '-j' для получения JSON вывода
-            cmd = ["yt-dlp", "--no-playlist", "--dump-single-json", url]
-            result = subprocess.check_output(cmd, text=True, encoding='utf-8')
+            cmd = [yt_dlp_path, "--no-playlist", "--dump-single-json", "--skip-download", url]
+            result = subprocess.check_output(cmd, text=True, encoding='utf-8', stderr=subprocess.PIPE)
             data = json.loads(result)
 
-            # Извлечение данных
             video_id = data.get('id', '')
             title = data.get('title', 'untitled')
             description = data.get('description', '')
             tags = data.get('tags', [])
 
-            # Определение базового имени файла
-            # Приоритет отдаем ID видео, так как он уникален и не содержит спецсимволов
-            base = video_id if video_id else title.replace(' ', '_').replace('/', '_').replace('\\', '_')
-            # Дополнительная очистка base от символов, недопустимых в именах файлов
-            base = "".join(c for c in base if c.isalnum() or c in ('_', '-')).strip()
-            if not base: # Если имя все равно пустое
-                base = "video"
+            # --- Determine base filename (prioritize ID) ---
+            raw_base = video_id if video_id else title
+            # Clean the base name: remove invalid chars, replace spaces, limit length
+            safe_base = re.sub(r'[<>:"/\\|?*]', '_', raw_base) # Remove forbidden chars
+            safe_base = re.sub(r'\s+', '_', safe_base) # Replace whitespace with underscore
+            safe_base = safe_base[:100] # Limit length to avoid issues
+            if not safe_base: # Handle edge case of empty name
+                safe_base = "video"
+            context.base = safe_base
+            # ---
 
-            context['base'] = base
-            context['title'] = title
-            context['description'] = description
-            context['tags'] = tags
+            context.title = title
+            context.description = description
+            context.tags = tags
 
-            meta_path = os.path.join(VIDEO_DIR, f"{base}.meta.txt")
-            self.log(f"Сохранение метаданных в: {meta_path}")
+            # Save metadata to file
+            meta_path = context.get_metadata_filepath()
+            if not meta_path:
+                 self.log("[ERROR] Cannot determine metadata file path (base name missing?).")
+                 return # Or raise error?
+
+            context.metadata_path = meta_path # Store path in context
+            self.log(f"[INFO] Saving metadata to: {meta_path}")
             try:
                 with open(meta_path, 'w', encoding='utf-8') as f:
+                    f.write(f"ID: {video_id}\n")
                     f.write(f"Title: {title}\n\n")
                     f.write(f"Description:\n{description}\n\n")
                     f.write(f"Tags: {', '.join(tags)}")
-                self.log("Метаданные успешно сохранены.")
+                self.log("[INFO] Metadata saved successfully.")
             except IOError as e:
-                self.log(f"Ошибка записи файла метаданных {meta_path}: {e}")
-                # Можно решить, прерывать ли выполнение дальше
-                # raise # Повторно выбросить исключение, если это критично
+                self.log(f"[ERROR] Failed to write metadata file {meta_path}: {e}")
+                # Decide if this is critical enough to raise
+                # raise
 
         except subprocess.CalledProcessError as e:
-            self.log(f"Ошибка выполнения yt-dlp для метаданных: {e}")
-            self.log(f"Команда: {' '.join(e.cmd)}")
-            self.log(f"Вывод: {e.output}")
-            raise # Передаем ошибку выше для обработки
-        except FileNotFoundError:
-            self.log("Ошибка: команда 'yt-dlp' не найдена. Убедитесь, что yt-dlp установлен и доступен в PATH.")
+            self.log(f"[ERROR] yt-dlp failed while fetching metadata: {e}")
+            self.log(f"[ERROR] Command: {' '.join(e.cmd)}")
+            self.log(f"[ERROR] Stderr: {e.stderr}")
             raise
         except json.JSONDecodeError as e:
-            self.log(f"Ошибка декодирования JSON от yt-dlp: {e}")
-            self.log(f"Полученные данные: {result[:500]}...") # Логируем часть данных для отладки
+            self.log(f"[ERROR] Failed to decode JSON from yt-dlp: {e}")
+            self.log(f"[DEBUG] Received data (partial): {result[:500]}...")
             raise
         except Exception as e:
-            self.log(f"Неожиданная ошибка при загрузке метаданных: {e}")
+            self.log(f"[ERROR] Unexpected error downloading metadata: {type(e).__name__} - {e}")
             raise

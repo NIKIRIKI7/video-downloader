@@ -1,111 +1,121 @@
-# File: viewmodel/video_viewmodel.py
-
 from model.video_service import VideoService
-# Добавляем Dict в импорт
+from model.processing_context import ProcessingContext # Can be useful for type hints if needed
+import constants
 from typing import List, Callable, Any, Optional, Dict
 import queue
-import traceback # Добавим импорт traceback здесь, т.к. он используется
+import traceback
+import threading # Import threading here as well
 
-# Тип для подписчика ViewModel (может принимать разные типы сообщений)
+# Type for ViewModel listeners
 ViewModelListener = Callable[[Dict[str, Any]], None]
 
 class VideoViewModel:
     """
-    ViewModel для управления логикой видео-операций и связи с View.
+    ViewModel connecting the View (GUI) and the Model (VideoService).
+    Handles application logic, state, and communication via a queue.
     """
     def __init__(self):
-        """Инициализатор ViewModel."""
-        # Используем потокобезопасную очередь для сообщений в GUI
-        self.message_queue = queue.Queue()
+        """Initializes ViewModel."""
+        self.message_queue = queue.Queue() # Thread-safe queue for View updates
         self.listeners: List[ViewModelListener] = []
-        # Сервис создается здесь, передаем ему метод log через очередь
-        self.service = VideoService(self._log_message)
+        self.service = VideoService(self._log_message_to_queue) # Pass logger method
+        self._current_context: Optional[ProcessingContext] = None # Store context if needed
 
     def add_listener(self, listener: ViewModelListener):
-        """
-        Добавляет подписчика на обновления от ViewModel.
-
-        Args:
-            listener: Функция обратного вызова, которая будет вызываться
-                      при поступлении новых сообщений (например, логов, статуса).
-                      Ожидает словарь с ключами 'type' ('log', 'status') и 'data'.
-        """
+        """Adds a listener (typically the View) for updates."""
         if listener not in self.listeners:
             self.listeners.append(listener)
 
     def remove_listener(self, listener: ViewModelListener):
-        """Удаляет подписчика."""
+        """Removes a listener."""
         try:
             self.listeners.remove(listener)
         except ValueError:
-            pass # Игнорируем, если подписчика уже нет
+            pass # Ignore if listener not found
 
     def _notify_listeners(self, message: Dict[str, Any]):
-        """Уведомляет всех подписчиков о событии."""
+        """Notifies all listeners about an event (e.g., queue update)."""
+        # This might be called from the worker thread.
+        # Listeners (GUI) should handle thread safety (e.g., using root.after).
         for listener in self.listeners:
             try:
                 listener(message)
             except Exception as e:
-                # Логируем ошибку в самом подписчике, чтобы не сломать цикл
-                # Используем print, так как логгер ViewModel может быть недоступен или вызывать зацикливание
-                print(f"Ошибка в подписчике ViewModel: {e}")
-                print(traceback.format_exc())
+                # Log listener errors directly to console to avoid loops
+                print(f"ERROR in ViewModel listener: {e}", flush=True)
+                print(traceback.format_exc(), flush=True)
 
-    def _log_message(self, msg: str):
+    def _log_message_to_queue(self, msg: str):
         """
-        Метод для логирования, который будет передан в VideoService.
-        Помещает лог-сообщение в очередь для потокобезопасной передачи в GUI.
+        Logs a message by putting it into the thread-safe queue for the GUI.
+        This method is passed to VideoService and Commands.
         """
-        log_event = {"type": "log", "data": msg}
-        # Кладем в очередь
+        # Determine log level based on prefix (simple approach)
+        level = "INFO" # Default
+        if msg.startswith("[ERROR]"):
+             level = "ERROR"
+        elif msg.startswith("[WARN]"):
+             level = "WARN"
+        elif msg.startswith("▶") or msg.startswith("✔") or msg.startswith("🎉"):
+             level = "INFO" # Or a custom "PROGRESS" level
+        elif msg.startswith("✖") or msg.startswith("❌"):
+             level = "ERROR"
+        elif msg.startswith("[DEBUG]"): # Allow debug messages if needed
+             level = "DEBUG"
+             # Optional: Don't show debug messages in GUI unless a flag is set
+             # return
+
+        log_event = {"type": "log", "level": level, "data": msg}
         self.message_queue.put(log_event)
-        # Уведомляем GUI, что есть что-то в очереди (GUI сам решит, как прочитать)
-        # Этот вызов _notify_listeners может происходить из рабочего потока service!
-        # Поэтому _notify_listeners должен быть потокобезопасным или вызываться из основного потока
-        # В текущей реализации gui.py он вызывает root.after(0, ...), что безопасно.
+        # Notify listeners that the queue has new data
         self._notify_listeners({"type": "queue_update"})
 
 
-    def run(self, url: str, yandex_audio: Optional[str], actions: List[str]):
+    def run(self, url: str, yandex_audio: Optional[str], actions: List[str], output_dir: str):
         """
-        Запускает выполнение выбранных действий через VideoService.
-        Этот метод выполняется в отдельном потоке (см. gui.py).
+        Starts the video processing tasks in a separate thread.
 
         Args:
-            url: URL видео.
-            yandex_audio: Путь к аудиофайлу Yandex (может быть None).
-            actions: Список ключей действий.
+            url: Video URL.
+            yandex_audio: Path to Yandex audio file (optional).
+            actions: List of action keys.
+            output_dir: Directory for output files.
         """
-        # Сообщаем GUI о начале операции через очередь
-        self.message_queue.put({"type": "status", "data": "running"})
+        # Signal start to GUI via queue
+        self.message_queue.put({"type": "status", "level":"INFO", "data": "running"})
         self._notify_listeners({"type": "queue_update"})
 
-        success = False
-        try:
-            # Вызываем сервис для выполнения работы
-            success = self.service.perform_actions(url, yandex_audio, actions)
-
-        except Exception as e:
-            # Ловим любые ошибки, которые могли произойти на уровне сервиса
-            # (хотя VideoService уже должен был их обработать и залогировать)
-            error_msg = f"Критическая ошибка в VideoService: {type(e).__name__} - {e}"
-            # Используем _log_message, который кладет в очередь
-            self._log_message(f"❌ {error_msg}")
-            self._log_message(f"Traceback:\n{traceback.format_exc()}")
+        # Define the target function for the thread
+        def task():
             success = False
-        finally:
-            # Сообщаем GUI о завершении операции (успешном или нет) через очередь
-            status = "finished" if success else "error"
-            self.message_queue.put({"type": "status", "data": status})
-            self._notify_listeners({"type": "queue_update"})
+            try:
+                # Run the service logic
+                success = self.service.perform_actions(url, yandex_audio, actions, output_dir)
+            except Exception as e:
+                # Catch unexpected errors from the service layer itself
+                error_msg = f"Critical error in VideoService execution: {type(e).__name__} - {e}"
+                self._log_message_to_queue(f"[ERROR] {error_msg}")
+                self._log_message_to_queue(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
+                success = False
+            finally:
+                # Signal end to GUI via queue
+                status = "finished" if success else "error"
+                level = "INFO" if success else "ERROR"
+                self.message_queue.put({"type": "status", "level": level, "data": status})
+                self._notify_listeners({"type": "queue_update"})
+
+        # Create and start the worker thread
+        thread = threading.Thread(target=task, daemon=True)
+        thread.start()
+
 
     def get_message_from_queue(self) -> Optional[Dict[str, Any]]:
         """
-        Извлекает одно сообщение из очереди (неблокирующий вызов).
-        Предназначен для использования View в основном потоке.
+        Retrieves one message from the queue (non-blocking).
+        Intended for use by the View in its main loop.
 
         Returns:
-            Словарь сообщения или None, если очередь пуста.
+            A message dictionary or None if the queue is empty.
         """
         try:
             return self.message_queue.get_nowait()

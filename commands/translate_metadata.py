@@ -1,100 +1,111 @@
 from commands.base_command import ActionCommand
-from constants import VIDEO_DIR
+from model.processing_context import ProcessingContext
+import constants
 from deep_translator import GoogleTranslator
 import os
-from typing import Dict, Any, List
+import time
 
 class TranslateMetadata(ActionCommand):
-    """Команда для перевода метаданных (название, описание, теги) с английского на русский."""
+    """Command to translate metadata fields."""
 
-    TARGET_LANG = "ru"
-    SOURCE_LANG = "en"
-
-    def execute(self, context: Dict[str, Any]) -> None:
-        """
-        Переводит метаданные, хранящиеся в контексте, и сохраняет их в файл .meta.ru.txt.
-
-        Args:
-            context: Словарь контекста. Ожидает 'base', 'title', 'description', 'tags'.
-                     Обновляет 'translated_title', 'translated_description', 'translated_tags',
-                     'translated_metadata_path'.
-
-        Raises:
-            KeyError: Если в контексте отсутствуют необходимые ключи.
-            Exception: Если произошла ошибка во время перевода или сохранения файла.
-        """
-        if not all(key in context for key in ['base', 'title', 'description', 'tags']):
-            self.log("Пропуск перевода метаданных: отсутствуют необходимые данные в контексте.")
+    def execute(self, context: ProcessingContext) -> None:
+        """Translates title, description, and tags."""
+        if not context.base:
+            self.log("[WARN] Skipping metadata translation: 'base' filename not set.")
+            return
+        if not context.title and not context.description and not context.tags:
+            self.log("[INFO] Skipping metadata translation: No metadata found in context.")
             return
 
-        base = context['base']
-        title = context['title']
-        description = context['description']
-        tags = context.get('tags', []) # Используем get для безопасности, вдруг тегов нет
+        target_lang = constants.TARGET_LANG
+        source_lang = constants.SOURCE_LANG
+        target_path = context.get_metadata_filepath(lang=target_lang)
 
-        # Проверка, есть ли что переводить
-        if not title and not description and not tags:
-            self.log("Пропуск перевода метаданных: нет текста для перевода.")
+        if not target_path:
+            self.log("[ERROR] Cannot determine target metadata file path.")
             return
 
-        self.log("Перевод метаданных...")
+        if os.path.exists(target_path):
+             self.log(f"[WARN] Translated metadata file already exists: {target_path}. Skipping.")
+             # Optionally load existing data into context if needed later?
+             context.translated_metadata_path = target_path
+             return
+
+        self.log(f"[INFO] Translating metadata from {source_lang} to {target_lang}...")
 
         try:
-            translator = GoogleTranslator(source=self.SOURCE_LANG, target=self.TARGET_LANG)
+            translator = GoogleTranslator(source=source_lang, target=target_lang)
+            t_title = ""
+            t_description = ""
+            t_tags = []
 
-            # Перевод заголовка
-            t_title = translator.translate(title) if title else ""
-            self.log(f"Заголовок переведен: '{t_title}'")
-
-            # Перевод описания (может быть длинным, переводим как есть)
-            # Добавим проверку на None/пустоту перед переводом
-            t_description = translator.translate(description) if description else ""
-            self.log("Описание переведено.") # Не логгируем всё описание
-
-            # Перевод тегов
-            t_tags: List[str] = []
-            if tags:
-                self.log(f"Перевод {len(tags)} тегов...")
-                for i, tag in enumerate(tags):
-                    try:
-                        if tag: # Проверяем, что тег не пустой
-                           translated_tag = translator.translate(tag)
-                           if translated_tag:
-                               t_tags.append(translated_tag)
-                        # Небольшая пауза между тегами может помочь избежать бана API
-                        # time.sleep(0.1) # Раскомментировать при необходимости
-                    except Exception as e:
-                         self.log(f"Ошибка перевода тега '{tag}': {e}")
-                         # Пропускаем ошибочный тег
-                         continue
-                self.log(f"Теги переведены: {', '.join(t_tags)}")
+            # Translate Title
+            if context.title:
+                try:
+                    t_title = translator.translate(context.title)
+                    self.log(f"[DEBUG] Translated Title: {t_title}")
+                except Exception as e:
+                    self.log(f"[ERROR] Failed to translate title: {e}")
             else:
-                 self.log("Теги для перевода отсутствуют.")
+                 self.log("[DEBUG] No title to translate.")
 
 
-            # Сохранение переведенных метаданных
-            output_filename = f"{base}.meta.{self.TARGET_LANG}.txt"
-            output_path = os.path.join(VIDEO_DIR, output_filename)
+            # Translate Description
+            if context.description:
+                try:
+                     # Translate in chunks if description is very long? (Googletrans might handle it)
+                     t_description = translator.translate(context.description)
+                     self.log("[DEBUG] Description translated (content not shown).")
+                except Exception as e:
+                    self.log(f"[ERROR] Failed to translate description: {e}")
+            else:
+                self.log("[DEBUG] No description to translate.")
 
-            self.log(f"Сохранение переведенных метаданных в: {output_path}")
-            try:
-                with open(output_path, 'w', encoding='utf-8') as f:
-                    f.write(f"Title: {t_title}\n\n")
-                    f.write(f"Description:\n{t_description}\n\n")
-                    f.write(f"Tags: {', '.join(t_tags)}")
+            # Translate Tags
+            if context.tags:
+                self.log(f"[INFO] Translating {len(context.tags)} tags...")
+                for i, tag in enumerate(context.tags):
+                    if not tag.strip(): continue
+                    try:
+                        # time.sleep(0.05) # Optional delay
+                        translated_tag = translator.translate(tag)
+                        if translated_tag:
+                            t_tags.append(translated_tag)
+                            # self.log(f"[DEBUG] Tag {i+1}: '{tag}' -> '{translated_tag}'")
+                        else:
+                            self.log(f"[WARN] Translation returned empty for tag: '{tag}'")
+                    except Exception as e:
+                        self.log(f"[ERROR] Failed to translate tag '{tag}': {e}")
+                        # time.sleep(0.5) # Optional longer delay after error
+                self.log(f"[INFO] Finished translating tags. Success: {len(t_tags)}/{len(context.tags)}")
+            else:
+                self.log("[DEBUG] No tags to translate.")
 
-                # Сохраняем переведенные данные в контекст для возможного дальнейшего использования
-                context['translated_title'] = t_title
-                context['translated_description'] = t_description
-                context['translated_tags'] = t_tags
-                context['translated_metadata_path'] = output_path
-                self.log("Переведенные метаданные успешно сохранены.")
 
-            except IOError as e:
-                self.log(f"Ошибка записи файла переведенных метаданных {output_path}: {e}")
-                raise # Передаем ошибку выше
+            # Save translated metadata
+            if t_title or t_description or t_tags:
+                self.log(f"[INFO] Saving translated metadata to: {target_path}")
+                try:
+                    with open(target_path, 'w', encoding='utf-8') as f:
+                        f.write(f"Title: {t_title}\n\n")
+                        f.write(f"Description:\n{t_description}\n\n")
+                        f.write(f"Tags: {', '.join(t_tags)}")
+
+                    context.translated_metadata_path = target_path
+                    # Store translated fields in context too?
+                    # context.translated_title = t_title
+                    # context.translated_description = t_description
+                    # context.translated_tags = t_tags
+                    self.log("[INFO] Translated metadata saved successfully.")
+                except IOError as e:
+                    self.log(f"[ERROR] Failed to write translated metadata file {target_path}: {e}")
+                    # raise?
+
+            else:
+                 self.log("[WARN] No metadata was successfully translated. Output file not saved.")
 
         except Exception as e:
-            # Ловим другие возможные ошибки (от deep_translator)
-            self.log(f"Ошибка во время перевода метаданных: {e}")
+            self.log(f"[ERROR] Unexpected error during metadata translation: {type(e).__name__} - {e}")
+            import traceback
+            self.log(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
             raise

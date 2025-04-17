@@ -1,93 +1,84 @@
 from commands.base_command import ActionCommand
-from utils import ensure_dir
-from constants import VIDEO_DIR
+from model.processing_context import ProcessingContext
+from utils.utils import ensure_dir, get_tool_path
+import constants
 import subprocess
 import os
-from typing import Dict, Any
 
 class DownloadVideo(ActionCommand):
-    """Команда для загрузки видео (и аудио) в формате MP4 с помощью yt-dlp."""
+    """Command to download the video itself using yt-dlp."""
 
-    VIDEO_FORMAT = "mp4"
-    # Опции yt-dlp: лучшее видео + лучшее аудио, объединить в mp4
-    YT_DLP_FORMAT = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+    def execute(self, context: ProcessingContext) -> None:
+        """Downloads the video file."""
+        if not context.base:
+            self.log("[ERROR] Cannot download video: 'base' filename not set in context.")
+            raise ValueError("Base filename not set in context before downloading video.")
 
-    def execute(self, context: Dict[str, Any]) -> None:
-        """
-        Загружает видеофайл для указанного URL.
+        url = context.url
+        output_dir = context.output_dir
+        ensure_dir(output_dir)
 
-        Args:
-            context: Словарь контекста. Ожидает 'url' и 'base'.
-                     Обновляет 'video_path'.
+        expected_video_path = context.get_video_filepath()
+        if not expected_video_path:
+            self.log("[ERROR] Cannot determine video file path.")
+            raise ValueError("Could not determine video file path.")
 
-        Raises:
-            subprocess.CalledProcessError: Если команда yt-dlp завершилась с ошибкой.
-            FileNotFoundError: Если yt-dlp не установлен или не найден в PATH,
-                               или если ожидаемый видеофайл не был создан.
-            KeyError: Если в контексте отсутствуют 'url' или 'base'.
-        """
-        url = context['url']
-        base = context['base'] # Ожидаем, что 'base' установлен DownloadMetadata
-        ensure_dir(VIDEO_DIR)
+        # Check if target file already exists
+        if os.path.exists(expected_video_path):
+             self.log(f"[WARN] Video file already exists: {expected_video_path}. Skipping download.")
+             context.video_path = expected_video_path # Ensure context path is set
+             return
 
-        # Формируем ожидаемый путь к видеофайлу
-        expected_video_filename = f"{base}.{self.VIDEO_FORMAT}"
-        expected_video_path = os.path.join(VIDEO_DIR, expected_video_filename)
-        context['video_path'] = expected_video_path # Записываем ожидаемый путь в контекст
+        yt_dlp_path = get_tool_path('yt-dlp')
+        output_template = os.path.join(output_dir, f"{context.base}.%(ext)s")
 
-        # Формируем шаблон для yt-dlp
-        output_template = os.path.join(VIDEO_DIR, f"{base}.%(ext)s")
-
-        self.log(f"Загрузка видео в формате {self.VIDEO_FORMAT} для URL: {url}")
-        # Команда yt-dlp
-        # Замечание: --write-description и --write-sub могут быть избыточны,
-        # если используются команды DownloadMetadata и DownloadSubtitles.
-        # Пока оставляем для универсальности, если эта команда используется отдельно.
+        self.log(f"[INFO] Downloading video ({constants.YT_DLP_FORMAT}) to {output_dir}...")
         cmd = [
-            "yt-dlp",
+            yt_dlp_path,
             "--no-playlist",
-            "--format", self.YT_DLP_FORMAT,
-            "--merge-output-format", self.VIDEO_FORMAT,
-            # "--write-description", # Можно убрать, если есть DownloadMetadata
-            # "--write-sub", "--sub-lang", "en", "--convert-subs", "vtt", # Можно убрать, если есть DownloadSubtitles
+            "--format", constants.YT_DLP_FORMAT,
+            "--merge-output-format", constants.VIDEO_FORMAT_EXT,
+            # Remove other writes if handled by separate commands
+            # "--write-description",
+            # "--write-sub", "--sub-lang", constants.SUB_LANG, "--convert-subs", constants.SUB_FORMAT,
             "-o", output_template,
             url
         ]
 
         try:
-            # Запускаем yt-dlp
             process = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8')
-            self.log(f"yt-dlp вывод (видео):\n{process.stdout}\n{process.stderr}")
+            # Log sparingly unless debug is needed
+            # self.log(f"[DEBUG] yt-dlp output (video):\n{process.stdout}\n{process.stderr}")
 
-            # Проверяем, был ли создан ожидаемый видеофайл
+            # Verify expected file was created
             if os.path.exists(expected_video_path):
-                self.log(f"Видео успешно загружено: {expected_video_path}")
+                context.video_path = expected_video_path
+                self.log(f"[INFO] Video downloaded successfully: {expected_video_path}")
             else:
-                # Проверим, не скачался ли файл с другим расширением (например, webm)
-                found_video = None
-                for fname in os.listdir(VIDEO_DIR):
+                # Search for the file with the correct base but potentially different extension
+                found_path = None
+                for fname in os.listdir(output_dir):
                     f_base, f_ext = os.path.splitext(fname)
-                    # Ищем файл с тем же 'base', но другим контейнером
-                    if f_base == base and f_ext != f".{self.VIDEO_FORMAT}" and f_ext in ['.mkv', '.webm', '.avi']:
-                        found_video = os.path.join(VIDEO_DIR, fname)
-                        self.log(f"Предупреждение: Видео скачано как {fname}. Путь в контексте остается {expected_video_path}.")
-                        # Можно добавить перекодирование в mp4 здесь, если это необходимо
-                        # Но пока просто сообщаем и используем то, что есть, если ffmpeg потом справится
-                        context['video_path'] = found_video # Обновляем путь в контексте на фактический
-                        break
-                if not found_video:
-                     self.log(f"Ошибка: Ожидаемый видеофайл не найден: {expected_video_path}")
-                     raise FileNotFoundError(f"Ожидаемый видеофайл не найден: {expected_video_path}")
+                    if f_base == context.base and f_ext and f_ext != ".part": # Ignore partial downloads
+                        actual_path = os.path.join(output_dir, fname)
+                        if os.path.exists(actual_path):
+                             found_path = actual_path
+                             break
+                if found_path:
+                     self.log(f"[WARN] Video downloaded as {os.path.basename(found_path)}, expected {os.path.basename(expected_video_path)}. Using actual file.")
+                     context.video_path = found_path # Use the actual path
+                else:
+                     self.log(f"[ERROR] Expected video file not found after download: {expected_video_path}")
+                     # Log yt-dlp output for debugging
+                     self.log(f"[DEBUG] yt-dlp stdout:\n{process.stdout}")
+                     self.log(f"[DEBUG] yt-dlp stderr:\n{process.stderr}")
+                     raise FileNotFoundError(f"Expected video file not found: {expected_video_path}")
 
         except subprocess.CalledProcessError as e:
-            self.log(f"Ошибка выполнения yt-dlp для видео: {e}")
-            self.log(f"Команда: {' '.join(e.cmd)}")
-            self.log(f"Вывод: {e.stderr}") # Ошибки часто в stderr
-            raise # Передаем ошибку выше
-        except FileNotFoundError:
-            # Может быть FileNotFoundError и если yt-dlp не найден
-            self.log("Ошибка: команда 'yt-dlp' не найдена или не удалось создать видеофайл. Убедитесь, что yt-dlp установлен и доступен в PATH.")
+            self.log(f"[ERROR] yt-dlp failed while downloading video: {e}")
+            self.log(f"[ERROR] Command: {' '.join(e.cmd)}")
+            self.log(f"[ERROR] Stderr: {e.stderr}")
             raise
         except Exception as e:
-            self.log(f"Неожиданная ошибка при загрузке видео: {e}")
+            self.log(f"[ERROR] Unexpected error downloading video: {type(e).__name__} - {e}")
             raise

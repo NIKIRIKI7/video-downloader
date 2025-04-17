@@ -1,32 +1,34 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Callable
+from typing import Callable
+from model.processing_context import ProcessingContext # Import the context object
 
-# Определим тип для логгера для ясности
+# Define type for logger for clarity
 LoggerCallable = Callable[[str], None]
 
 class ActionCommand(ABC):
-    """Абстрактный базовый класс для всех команд действий."""
+    """Abstract base class for all action commands."""
 
     def __init__(self, logger: LoggerCallable):
         """
-        Инициализатор команды.
+        Initializes the command.
 
         Args:
-            logger: Функция для логирования сообщений.
+            logger: Function to log messages (typically from ViewModel).
         """
         self.log: LoggerCallable = logger
 
     @abstractmethod
-    def execute(self, context: Dict[str, Any]) -> None:
+    def execute(self, context: ProcessingContext) -> None:
         """
-        Выполняет действие команды.
+        Executes the command's action.
 
         Args:
-            context: Словарь с данными, передаваемый между командами.
-                     Ожидается, что команды могут читать и изменять этот словарь.
+            context: The data context shared between commands.
+                     Commands read from and write to this object.
 
         Raises:
-            Exception: Может выбрасывать исключения в случае ошибок выполнения.
-                       Эти ошибки должны обрабатываться вызывающей стороной (например, VideoService).
+            Exception: Can raise exceptions on errors (e.g., FileNotFoundError,
+                       subprocess.CalledProcessError, API errors), which should
+                       be handled by the caller (VideoService).
         """
         pass

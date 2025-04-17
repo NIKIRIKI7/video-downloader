@@ -1,94 +1,99 @@
 from commands.base_command import ActionCommand
-from utils import ensure_dir
-from constants import VIDEO_DIR
+from model.processing_context import ProcessingContext
+from utils.utils import ensure_dir, get_tool_path
+import constants
 import subprocess
 import os
-from typing import Dict, Any
 
 class DownloadSubtitles(ActionCommand):
-    """Команда для загрузки английских субтитров видео в формате VTT с помощью yt-dlp."""
+    """Command to download subtitles using yt-dlp."""
 
-    SUB_LANG = "en"
-    SUB_FORMAT = "vtt"
+    def execute(self, context: ProcessingContext) -> None:
+        """Downloads subtitles in the specified language and format."""
+        if not context.base:
+            self.log("[ERROR] Cannot download subtitles: 'base' filename not set.")
+            raise ValueError("Base filename not set in context.")
 
-    def execute(self, context: Dict[str, Any]) -> None:
-        """
-        Загружает субтитры для указанного URL.
+        url = context.url
+        output_dir = context.output_dir
+        ensure_dir(output_dir)
 
-        Args:
-            context: Словарь контекста. Ожидает 'url' и 'base'.
-                     Обновляет 'subtitle_path' (путь к загруженным субтитрам).
+        lang = constants.SUB_LANG
+        sub_format = constants.SUB_FORMAT
+        expected_sub_path = context.get_subtitle_filepath(lang)
 
-        Raises:
-            subprocess.CalledProcessError: Если команда yt-dlp завершилась с ошибкой.
-            FileNotFoundError: Если yt-dlp не установлен или не найден в PATH,
-                               или если ожидаемый файл субтитров не был создан.
-            KeyError: Если в контексте отсутствуют 'url' или 'base'.
-        """
-        url = context['url']
-        base = context['base'] # Ожидаем, что 'base' установлен предыдущей командой (DownloadMetadata)
-        ensure_dir(VIDEO_DIR)
+        if not expected_sub_path:
+             self.log("[ERROR] Cannot determine subtitle file path.")
+             raise ValueError("Could not determine subtitle file path.")
 
-        # Формируем ожидаемое имя файла субтитров
-        # yt-dlp по умолчанию добавляет язык к имени, если base не содержит его
-        # Формат имени: {base}.{lang}.{ext}
-        expected_sub_filename = f"{base}.{self.SUB_LANG}.{self.SUB_FORMAT}"
-        expected_sub_path = os.path.join(VIDEO_DIR, expected_sub_filename)
+        # Check if file already exists
+        if os.path.exists(expected_sub_path):
+            self.log(f"[WARN] Subtitle file already exists: {expected_sub_path}. Skipping download.")
+            context.subtitle_path = expected_sub_path
+            return
 
-        # Формируем шаблон для yt-dlp, чтобы он создал файл с нужным именем
-        # Важно: Указываем только имя без расширения, yt-dlp добавит язык и расширение сам
-        output_template = os.path.join(VIDEO_DIR, f"{base}.%(ext)s")
+        yt_dlp_path = get_tool_path('yt-dlp')
+        # Output template for yt-dlp (name only, extension/lang added by tool)
+        output_template = os.path.join(output_dir, f"{context.base}") # No extension here
 
-        self.log(f"Загрузка субтитров ({self.SUB_LANG}, {self.SUB_FORMAT}) для URL: {url}")
+        self.log(f"[INFO] Downloading subtitles ({lang}, {sub_format})...")
         cmd = [
-            "yt-dlp",
+            yt_dlp_path,
             "--no-playlist",
-            "--skip-download", # Только субтитры
+            "--skip-download", # Only subs
             "--write-sub",
-            "--sub-lang", self.SUB_LANG,
-            "--convert-subs", self.SUB_FORMAT,
-            "-o", output_template, # Шаблон имени выходного файла (без субтитров)
+            "--sub-lang", lang,
+            "--convert-subs", sub_format,
+            "-o", output_template, # Base path for output naming
             url
         ]
 
         try:
-            # Запускаем yt-dlp
             process = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8')
-            self.log(f"yt-dlp вывод (субтитры):\n{process.stdout}\n{process.stderr}")
+            # self.log(f"[DEBUG] yt-dlp output (subtitles):\n{process.stdout}\n{process.stderr}") # Log if needed
 
-            # Проверяем, был ли создан ожидаемый файл
+            # Verify the expected file exists
             if os.path.exists(expected_sub_path):
-                context['subtitle_path'] = expected_sub_path
-                self.log(f"Субтитры успешно загружены: {expected_sub_path}")
+                context.subtitle_path = expected_sub_path
+                self.log(f"[INFO] Subtitles downloaded successfully: {expected_sub_path}")
             else:
-                # Попробуем найти файл с немного другим именем (иногда yt-dlp может не добавить язык, если он один)
-                alt_sub_filename = f"{base}.{self.SUB_FORMAT}"
-                alt_sub_path = os.path.join(VIDEO_DIR, alt_sub_filename)
-                if os.path.exists(alt_sub_path):
-                     # Переименуем для консистентности
-                     os.rename(alt_sub_path, expected_sub_path)
-                     context['subtitle_path'] = expected_sub_path
-                     self.log(f"Субтитры найдены как {alt_sub_filename}, переименованы в {expected_sub_filename}")
+                # Sometimes yt-dlp creates filename without lang code if only one lang downloaded
+                alt_sub_path = context._get_path("", sub_format) # e.g., base.vtt
+                if alt_sub_path and os.path.exists(alt_sub_path):
+                    self.log(f"[WARN] Subtitle found as {os.path.basename(alt_sub_path)}. Renaming to {os.path.basename(expected_sub_path)}.")
+                    try:
+                        os.rename(alt_sub_path, expected_sub_path)
+                        context.subtitle_path = expected_sub_path
+                        self.log(f"[INFO] Subtitles ready: {expected_sub_path}")
+                    except OSError as rename_err:
+                         self.log(f"[ERROR] Failed to rename subtitle file: {rename_err}")
+                         context.subtitle_path = alt_sub_path # Use the alternative path if rename fails
                 else:
-                    self.log(f"Ошибка: Ожидаемый файл субтитров не найден: {expected_sub_path}")
-                    self.log(f"Возможно, субтитры на языке '{self.SUB_LANG}' отсутствуют для этого видео.")
-                    # Не выбрасываем ошибку, но и не устанавливаем 'subtitle_path'
-                    # Следующие шаги (перевод) должны это проверить
-                    # raise FileNotFoundError(f"Ожидаемый файл субтитров не найден: {expected_sub_path}")
+                    # Check stderr for common "no subtitles" message
+                    stderr_lower = process.stderr.lower()
+                    if f"no subtitles found for languages: {lang}" in stderr_lower or \
+                       f"unable to download video subtitles" in stderr_lower:
+                         self.log(f"[WARN] No subtitles available in '{lang}' for this video.")
+                         # Not an error, just no subs. Context.subtitle_path remains None.
+                    else:
+                         self.log(f"[ERROR] Expected subtitle file not found after download: {expected_sub_path}")
+                         self.log(f"[DEBUG] yt-dlp stdout:\n{process.stdout}")
+                         self.log(f"[DEBUG] yt-dlp stderr:\n{process.stderr}")
+                         # Don't raise, allow process to continue, but log error
+                         # raise FileNotFoundError(f"Expected subtitle file not found: {expected_sub_path}")
 
         except subprocess.CalledProcessError as e:
-            self.log(f"Ошибка выполнения yt-dlp для субтитров: {e}")
-            self.log(f"Команда: {' '.join(e.cmd)}")
-            self.log(f"Вывод: {e.stderr}") # Ошибки часто в stderr
-            # Проверим stderr на сообщение о недоступности субтитров
-            if f"subtitles for {self.SUB_LANG}" in e.stderr:
-                 self.log(f"Субтитры на языке '{self.SUB_LANG}' недоступны.")
-                 # Не считаем это критической ошибкой, просто пропускаем шаг
+             # Check stderr for "no subtitles" message even if it's an error exit code
+            stderr_lower = e.stderr.lower()
+            if f"no subtitles found for languages: {lang}" in stderr_lower or \
+               f"unable to download video subtitles" in stderr_lower:
+                 self.log(f"[WARN] No subtitles available in '{lang}' for this video (reported by yt-dlp error).")
+                 # Not a critical error for the flow
             else:
-                 raise # Передаем другие ошибки выше
-        except FileNotFoundError:
-            self.log("Ошибка: команда 'yt-dlp' не найдена. Убедитесь, что yt-dlp установлен и доступен в PATH.")
-            raise
+                self.log(f"[ERROR] yt-dlp failed while downloading subtitles: {e}")
+                self.log(f"[ERROR] Command: {' '.join(e.cmd)}")
+                self.log(f"[ERROR] Stderr: {e.stderr}")
+                raise # Re-raise other errors
         except Exception as e:
-            self.log(f"Неожиданная ошибка при загрузке субтитров: {e}")
+            self.log(f"[ERROR] Unexpected error downloading subtitles: {type(e).__name__} - {e}")
             raise
