@@ -23,7 +23,8 @@ class SettingsTab(ttk.Frame):
         # -- Языки и субтитры --
         lang_frame = ttk.LabelFrame(settings_frame, text="Языки и субтитры", padding=10)
         lang_frame.grid(row=current_row, column=0, columnspan=3, sticky=tk.EW, padx=5, pady=5)
-        lang_frame.columnconfigure(1, weight=0)
+        lang_frame.columnconfigure(1, weight=0) # Не растягивать колонку с полями ввода
+        lang_frame.columnconfigure(0, weight=0) # Не растягивать колонку с метками
         current_row += 1
 
         ttk.Label(lang_frame, text="Исходный язык (Перевод С):").grid(row=0, column=0, sticky=tk.W, padx=5, pady=3)
@@ -50,6 +51,7 @@ class SettingsTab(ttk.Frame):
         audio_frame = ttk.LabelFrame(settings_frame, text="Микширование аудио (FFmpeg)", padding=10)
         audio_frame.grid(row=current_row, column=0, columnspan=3, sticky=tk.EW, padx=5, pady=5)
         audio_frame.columnconfigure(1, weight=0)
+        audio_frame.columnconfigure(0, weight=0)
         current_row += 1
 
         ttk.Label(audio_frame, text="Громкость оригинала (0.0=Тихо, 1.0=Исходная):").grid(row=0, column=0, sticky=tk.W, padx=5, pady=3)
@@ -70,18 +72,19 @@ class SettingsTab(ttk.Frame):
         # -- Скачивание (yt-dlp) --
         dl_frame = ttk.LabelFrame(settings_frame, text="Скачивание (yt-dlp)", padding=10)
         dl_frame.grid(row=current_row, column=0, columnspan=3, sticky=tk.EW, padx=5, pady=5)
-        dl_frame.columnconfigure(1, weight=1)
+        dl_frame.columnconfigure(1, weight=1) # Растягивать поле ввода формата
+        dl_frame.columnconfigure(0, weight=0)
         current_row += 1
 
         ttk.Label(dl_frame, text="Код формата видео (см. yt-dlp -F):").grid(row=0, column=0, sticky=tk.W, padx=5, pady=3)
         self.yt_dlp_format_var = tk.StringVar(value=constants.YT_DLP_FORMAT_DEFAULT)
-        self.yt_dlp_format_ent = ttk.Entry(dl_frame, textvariable=self.yt_dlp_format_var, width=50)
+        self.yt_dlp_format_ent = ttk.Entry(dl_frame, textvariable=self.yt_dlp_format_var, width=50) # Сделаем поле шире
         self.yt_dlp_format_ent.grid(row=0, column=1, columnspan=2, sticky=tk.EW, padx=5, pady=3)
 
         ttk.Label(dl_frame, text="Контейнер видео на выходе (mp4, mkv):").grid(row=1, column=0, sticky=tk.W, padx=5, pady=3)
         self.video_format_ext_var = tk.StringVar(value=constants.VIDEO_FORMAT_EXT_DEFAULT)
         self.video_format_ext_ent = ttk.Entry(dl_frame, textvariable=self.video_format_ext_var, width=10)
-        self.video_format_ext_ent.grid(row=1, column=1, sticky=tk.W, padx=5, pady=3)
+        self.video_format_ext_ent.grid(row=1, column=1, sticky=tk.W, padx=5, pady=3) # Сделаем нерастягивающимся
 
         # Список всех полей ввода для управления состоянием
         self.input_widgets = [
@@ -110,9 +113,13 @@ class SettingsTab(ttk.Frame):
 
     def set_enabled(self, enabled: bool):
         """Включает или отключает поля ввода на вкладке."""
-        widget_state = 'normal' if enabled else 'disabled'
+        widget_state = tk.NORMAL if enabled else tk.DISABLED
         for widget in self.input_widgets:
-            try:
-                widget.configure(state=widget_state)
-            except tk.TclError:
-                pass # Игнорировать ошибки для уже уничтоженных виджетов
+            # Проверяем существование виджета перед изменением состояния
+            if widget is not None and widget.winfo_exists():
+                try:
+                    # ttk.Entry и tk.Entry используют configure или config
+                    if isinstance(widget, (ttk.Entry, tk.Entry)):
+                        widget.configure(state=widget_state)
+                except tk.TclError:
+                    pass # Игнорировать ошибки для виджетов, которые могли быть уничтожены

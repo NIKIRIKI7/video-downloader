@@ -26,6 +26,7 @@ META_SUFFIX = "meta"
 SUBTITLE_EXT_DEFAULT = "vtt" # Now default, actual ext might vary if format changes
 META_EXT_DEFAULT = "txt"
 AUDIO_MIX_SUFFIX = "mixed"
+THUMBNAIL_EXT_DEFAULT = "jpg" # Добавлено: Расширение по умолчанию для превью (yt-dlp может выбрать другое)
 
 # --- FFmpeg Settings ---
 # DEFAULTS - These will be configurable via GUI
@@ -34,4 +35,9 @@ ADDED_VOLUME_DEFAULT = "1.0"  # Default added (Yandex) audio volume
 MERGED_AUDIO_CODEC_DEFAULT = "aac" # Output audio codec after merging
 
 # --- GUI ---
-QUEUE_POLL_INTERVAL_MS = 100 # Check ViewModel queue interval
+QUEUE_POLL_INTERVAL_MS = 100 # Check ViewModel queue interval (milliseconds)
+
+# --- Trimming ---
+# Можно добавить константы по умолчанию для времени обрезки, если нужно
+TRIM_START_TIME_DEFAULT = "00:00:00.000"
+TRIM_END_TIME_DEFAULT = "00:00:10.000"

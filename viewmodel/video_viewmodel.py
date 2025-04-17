@@ -1,4 +1,6 @@
+import subprocess
 from model.video_service import VideoService
+from commands.trim_media import TrimMedia # Добавлено
 # Import ProcessingContext only for type hints if needed, not for direct use here
 # from model.processing_context import ProcessingContext
 # Import constants only if needed for some VM logic, usually not required
@@ -14,147 +16,172 @@ ViewModelListener = Callable[[Dict[str, Any]], None]
 
 class VideoViewModel:
     """
-    ViewModel connecting the View (GUI) and the Model (VideoService).
-    Handles application logic orchestration, state management (like is_running,
-    though GUI handles its own _is_running), and communication between View and Model
-    via a thread-safe queue.
+    ViewModel, связывающий View (GUI) и Model (VideoService, TrimMedia).
+    Управляет логикой оркестрации, состоянием и обменом данными через потокобезопасную очередь.
     """
     def __init__(self):
-        """Initializes ViewModel, message queue, and VideoService."""
-        # Thread-safe queue for sending messages (logs, status) from Model/VM to View
-        self.message_queue = queue.Queue()
-        # List of listeners (usually just the GUI) to notify about queue updates
-        self.listeners: List[ViewModelListener] = []
-        # Instantiate the VideoService, passing the method to log messages back to the queue
+        """Инициализирует ViewModel, очередь сообщений, VideoService и TrimMedia."""
+        self.message_queue = queue.Queue() # Потокобезопасная очередь для сообщений View
+        self.listeners: List[ViewModelListener] = [] # Список слушателей (обычно GUI)
+        # Сервис для обработки URL, передаем метод логирования в очередь
         self.service = VideoService(self._log_message_to_queue)
-        # Internal state tracking if needed (e.g., to prevent multiple runs from VM side)
-        self._is_processing = False
-        self._processing_thread: Optional[threading.Thread] = None
+        # Команда обрезки, передаем тот же метод логирования
+        self.trimmer = TrimMedia(self._log_message_to_queue)
+        # Внутреннее состояние для предотвращения одновременного запуска одного типа операций
+        self._is_url_processing = False
+        self._url_processing_thread: Optional[threading.Thread] = None
+        self._is_trimming = False
+        self._trimming_thread: Optional[threading.Thread] = None
+
 
     def add_listener(self, listener: ViewModelListener):
-        """Adds a listener function (e.g., GUI's _handle_vm_notification)."""
+        """Добавляет функцию-слушателя (например, _handle_vm_notification из GUI)."""
         if listener not in self.listeners:
             self.listeners.append(listener)
 
     def remove_listener(self, listener: ViewModelListener):
-        """Removes a listener function."""
+        """Удаляет функцию-слушателя."""
         try:
             self.listeners.remove(listener)
         except ValueError:
-            pass # Ignore if listener was already removed or not found
+            pass
 
     def _notify_listeners(self, message: Dict[str, Any]):
         """
-        Notifies all registered listeners about an event.
-        This might be called from the worker thread, so listeners (GUI)
-        must handle thread safety (e.g., using `root.after` in Tkinter).
-        The message typically indicates that there's new data in the queue.
+        Уведомляет всех зарегистрированных слушателей о событии.
+        Может вызываться из рабочего потока, поэтому слушатели (GUI)
+        должны обеспечивать безопасность потоков (например, используя `root.after` в Tkinter).
+        Сообщение обычно сигнализирует о наличии новых данных в очереди.
         """
         for listener in self.listeners:
             try:
-                # Call the listener function with the message
                 listener(message)
             except Exception as e:
-                # Log errors in listener execution directly to console to avoid loops/crashes
-                print(f"ERROR executing ViewModel listener {listener.__name__}: {e}", flush=True)
+                print(f"ОШИБКА выполнения слушателя ViewModel {listener.__name__}: {e}", flush=True)
                 print(traceback.format_exc(), flush=True)
 
-    def _log_message_to_queue(self, msg: str):
+    def _log_message_to_queue(self, msg: str, origin: str = "url"):
         """
-        Logs a message originating from the Model (VideoService, Commands)
-        by putting it into the thread-safe queue for the View to process.
-        Also determines a basic log level based on message prefixes.
+        Логирует сообщение (из Model или VM), помещая его в очередь для View.
+        Определяет уровень лога и добавляет источник (origin).
         """
-        # Determine log level based on simple prefix matching (case-insensitive)
-        level = "INFO" # Default level
+        level = "INFO"
         msg_lower = msg.lower()
+        # Определяем уровень по префиксам
         if msg_lower.startswith("[error]") or msg_lower.startswith("✖") or msg_lower.startswith("❌"):
              level = "ERROR"
         elif msg_lower.startswith("[warn]"):
              level = "WARN"
-        elif msg_lower.startswith("▶") or msg_lower.startswith("✔") or msg_lower.startswith("🎉") or msg_lower.startswith("✅"):
-             # Consider a more specific level like "PROGRESS" or "SUCCESS" if needed by View
-             level = "INFO" # Treat these progress/success markers as INFO for now
+        elif msg_lower.startswith("▶") or msg_lower.startswith("✔") or msg_lower.startswith("🎉") or msg_lower.startswith("✅") or msg_lower.startswith("[info]"):
+             level = "INFO"
         elif msg_lower.startswith("[debug]"):
              level = "DEBUG"
-             # Optional: Filter out debug messages unless a global debug flag is set
-             # if not DEBUG_MODE: return
+        # Добавляем специальный уровень для обрезки для GUI
+        elif msg_lower.startswith("[trim]"):
+             level = "TRIM"
+             # Удаляем префикс [TRIM] из самого сообщения, так как уровень уже установлен
+             if msg.startswith("[TRIM]"):
+                 msg = msg[len("[TRIM]"):].lstrip()
 
-        # Create the message dictionary
-        log_event = {"type": "log", "level": level, "data": msg}
-        # Put the message onto the queue
+
+        # Фильтруем DEBUG сообщения, если не включен режим отладки (условно)
+        # if level == "DEBUG" and not constants.DEBUG_MODE: return
+
+        log_event = {"type": "log", "level": level, "data": msg, "origin": origin}
         self.message_queue.put(log_event)
-        # Notify listeners that the queue has been updated
-        # Pass a simple notification message, the listener will pull from the queue
+        # Уведомляем слушателей, что очередь обновилась
         self._notify_listeners({"type": "queue_update"})
 
 
     def run(self, url: str, yandex_audio: Optional[str], actions: List[str], output_dir: str, settings: Dict[str, Any]):
         """
-        Starts the video processing task (VideoService.perform_actions)
-        in a separate background thread.
-
-        Args:
-            url: Video URL.
-            yandex_audio: Path to external audio file (optional).
-            actions: List of action keys selected by the user.
-            output_dir: Directory for output files.
-            settings: Dictionary of settings collected from the GUI.
+        Запускает задачу обработки видео (VideoService.perform_actions) в отдельном потоке.
         """
-        # Prevent starting a new process if one is already running
-        if self._is_processing and self._processing_thread and self._processing_thread.is_alive():
-             self._log_message_to_queue("[WARN] Another processing task is already running.")
-             # Optionally notify listeners immediately about this warning
-             # self._notify_listeners({"type":"status", "data":"already_running"})
+        if self._is_url_processing and self._url_processing_thread and self._url_processing_thread.is_alive():
+             self._log_message_to_queue("[WARN] Задача обработки URL уже выполняется.", origin="url")
+             return
+        if self._is_trimming and self._trimming_thread and self._trimming_thread.is_alive():
+             self._log_message_to_queue("[WARN] Дождитесь завершения обрезки перед запуском обработки URL.", origin="url")
              return
 
-        self._is_processing = True # Set processing flag
+        self._is_url_processing = True
 
-        # Signal start to GUI via queue immediately before starting thread
-        self.message_queue.put({"type": "status", "level":"INFO", "data": "running"})
+        # Сигнал о начале в GUI через очередь
+        self.message_queue.put({"type": "status", "level":"INFO", "data": "running", "origin": "url"})
         self._notify_listeners({"type": "queue_update"})
 
-        # Define the target function for the background thread
+        # Целевая функция для фонового потока
         def task():
-            success = False # Track success of the operation
+            success = False
             try:
-                # Call the core logic in VideoService, passing all necessary data
                 success = self.service.perform_actions(url, yandex_audio, actions, output_dir, settings)
             except Exception as e:
-                # Catch unexpected errors that might occur *within* the service layer itself
-                # (Errors within commands should ideally be caught and logged by the service loop)
-                error_msg = f"Critical error during VideoService execution: {type(e).__name__} - {e}"
-                self._log_message_to_queue(f"[ERROR] {error_msg}")
-                # Log the full traceback for debugging critical errors
-                self._log_message_to_queue(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
-                success = False # Ensure status reflects the critical error
+                error_msg = f"Критическая ошибка во время выполнения VideoService: {type(e).__name__} - {e}"
+                self._log_message_to_queue(f"[ERROR] {error_msg}", origin="url")
+                self._log_message_to_queue(f"[DEBUG] Traceback:\n{traceback.format_exc()}", origin="url")
+                success = False
             finally:
-                # This block executes whether the try block succeeded or raised an exception
-                # Signal completion status (finished or error) to GUI via queue
                 status = "finished" if success else "error"
                 level = "INFO" if success else "ERROR"
-                self.message_queue.put({"type": "status", "level": level, "data": status})
+                self.message_queue.put({"type": "status", "level": level, "data": status, "origin": "url"})
                 self._notify_listeners({"type": "queue_update"})
-                # Reset processing flag when task finishes
-                self._is_processing = False
+                self._is_url_processing = False # Сброс флага
 
-        # Create and start the background thread
-        # Mark as daemon so it exits if the main program exits unexpectedly
-        self._processing_thread = threading.Thread(target=task, daemon=True)
-        self._processing_thread.start()
+        self._url_processing_thread = threading.Thread(target=task, daemon=True)
+        self._url_processing_thread.start()
+
+
+    def run_trim(self, input_path: str, output_path: str, start_time: str, end_time: str):
+        """
+        Запускает задачу обрезки медиафайла (TrimMedia.execute) в отдельном потоке.
+        """
+        if self._is_trimming and self._trimming_thread and self._trimming_thread.is_alive():
+            self._log_message_to_queue("[WARN] Задача обрезки уже выполняется.", origin="trim")
+            return
+        if self._is_url_processing and self._url_processing_thread and self._url_processing_thread.is_alive():
+            self._log_message_to_queue("[WARN] Дождитесь завершения обработки URL перед запуском обрезки.", origin="trim")
+            return
+
+        self._is_trimming = True
+
+        # Сигнал о начале в GUI
+        self.message_queue.put({"type": "status", "level":"INFO", "data": "running", "origin": "trim"})
+        self._notify_listeners({"type": "queue_update"})
+
+        # Целевая функция для фонового потока обрезки
+        def trim_task():
+            success = False
+            try:
+                # Вызываем execute у экземпляра TrimMedia
+                self.trimmer.execute(input_path, output_path, start_time, end_time)
+                success = True # Если execute не вызвал исключение, считаем успехом
+            except Exception as e:
+                # Логируем ошибку через нашу систему (trimmer уже должен был залогировать детали)
+                self._log_message_to_queue(f"[ERROR] Ошибка во время выполнения обрезки: {type(e).__name__} - {e}", origin="trim")
+                # Дополнительно логируем traceback для неожиданных ошибок
+                if not isinstance(e, (FileNotFoundError, ValueError, subprocess.CalledProcessError)):
+                     self._log_message_to_queue(f"[DEBUG] Traceback:\n{traceback.format_exc()}", origin="trim")
+                success = False
+            finally:
+                status = "finished" if success else "error"
+                level = "INFO" if success else "ERROR"
+                self.message_queue.put({"type": "status", "level": level, "data": status, "origin": "trim"})
+                self._notify_listeners({"type": "queue_update"})
+                self._is_trimming = False # Сброс флага
+
+        self._trimming_thread = threading.Thread(target=trim_task, daemon=True)
+        self._trimming_thread.start()
 
 
     def get_message_from_queue(self) -> Optional[Dict[str, Any]]:
         """
-        Allows the View (or other listeners) to retrieve one message
-        from the queue in a non-blocking way.
+        Позволяет View (или другим слушателям) извлечь одно сообщение
+        из очереди без блокировки.
 
         Returns:
-            A message dictionary if one is available, otherwise None.
+            Словарь сообщения, если он доступен, иначе None.
         """
         try:
-            # Get message without waiting
             return self.message_queue.get_nowait()
         except queue.Empty:
-            # Return None if the queue is currently empty
             return None

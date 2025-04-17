@@ -1,35 +1,37 @@
 from abc import ABC, abstractmethod
-from typing import Callable
-# Import ProcessingContext for type hinting in execute method signature
-from model.processing_context import ProcessingContext
+from typing import Callable, TYPE_CHECKING
 
-# Define type for logger for clarity
+# Импортируем ProcessingContext только для проверки типов, чтобы избежать циклического импорта
+if TYPE_CHECKING:
+    from model.processing_context import ProcessingContext
+
+# Определяем тип для логгера для ясности
 LoggerCallable = Callable[[str], None]
 
 class ActionCommand(ABC):
-    """Abstract base class for all action commands."""
+    """Абстрактный базовый класс для всех команд действий."""
 
     def __init__(self, logger: LoggerCallable):
         """
-        Initializes the command.
+        Инициализирует команду.
 
         Args:
-            logger: Function to log messages (typically from ViewModel).
+            logger: Функция для логирования сообщений (обычно из ViewModel).
         """
         self.log: LoggerCallable = logger
 
     @abstractmethod
-    def execute(self, context: ProcessingContext) -> None:
+    def execute(self, context: 'ProcessingContext') -> None:
         """
-        Executes the command's action using data and settings from the context.
+        Выполняет действие команды, используя данные и настройки из контекста.
 
         Args:
-            context: The data context shared between commands, including settings.
-                     Commands read from and write to this object.
+            context: Контекст данных, общий для команд, включая настройки.
+                     Команды читают из и пишут в этот объект.
 
         Raises:
-            Exception: Can raise exceptions on errors (e.g., FileNotFoundError,
-                       subprocess.CalledProcessError, API errors, ValueError),
-                       which should be handled by the caller (VideoService).
+            Exception: Может вызывать исключения при ошибках (например, FileNotFoundError,
+                       subprocess.CalledProcessError, ошибки API, ValueError),
+                       которые должны обрабатываться вызывающей стороной (VideoService).
         """
         pass

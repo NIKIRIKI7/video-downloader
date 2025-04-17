@@ -1,73 +1,63 @@
+# File: utils/utils.py
+
 import os
 import shutil
 from typing import Optional
-# Import constants only if needed for default paths, but get_tool_path gets it passed now
+import re # Добавлено для валидации времени
+
 # import constants
 
 def ensure_dir(path: str) -> None:
     """
-    Creates a directory at the specified path if it doesn't exist.
-    Raises OSError if creation fails.
+    Создает директорию по указанному пути, если она не существует.
+    Вызывает OSError при ошибке создания.
     """
     if not os.path.isdir(path):
         try:
-            os.makedirs(path, exist_ok=True) # exist_ok=True avoids error if dir exists
-            # Use print for utils as logger might not be available here
-            print(f"[INFO] Created directory: {path}")
+            os.makedirs(path, exist_ok=True)
+            print(f"[INFO] Создана директория: {path}")
         except OSError as e:
-            print(f"[ERROR] Failed to create directory {path}: {e}")
-            raise # Re-raise the exception as directory creation is often crucial
+            print(f"[ERROR] Не удалось создать директорию {path}: {e}")
+            raise
 
 def find_executable(name: str, configured_path: Optional[str]) -> Optional[str]:
     """
-    Finds the executable path for a given tool.
-    Checks the configured path first, then searches the system PATH.
+    Находит путь к исполняемому файлу для данного инструмента.
+    Сначала проверяет настроенный путь, затем ищет в системном PATH.
 
     Args:
-        name: The name of the executable (e.g., 'ffmpeg', 'yt-dlp').
-        configured_path: The path specified in constants.py (or None/empty).
+        name: Имя исполняемого файла (например, 'ffmpeg', 'yt-dlp').
+        configured_path: Путь, указанный в constants.py (или None/пустой).
 
     Returns:
-        The full path to the executable if found and executable, or None otherwise.
+        Полный путь к исполняемому файлу, если он найден и исполняем, иначе None.
     """
-    # 1. Check configured path (if provided and valid)
     if configured_path and os.path.isfile(configured_path):
-        # Check if it's executable
         if os.access(configured_path, os.X_OK):
-             # print(f"[DEBUG] Found '{name}' via configured path: {configured_path}")
              return configured_path
         else:
-            print(f"[WARN] Configured path for '{name}' exists but is not executable: {configured_path}")
-            # Continue to check PATH
+            print(f"[WARN] Настроенный путь для '{name}' существует, но не является исполняемым: {configured_path}")
 
-    # 2. Check system PATH using shutil.which (handles .exe on Windows etc.)
     found_path = shutil.which(name)
     if found_path:
-        # shutil.which already verifies it's executable to some extent
-        # print(f"[DEBUG] Found '{name}' in system PATH: {found_path}")
         return found_path
 
-    # 3. Not found
-    # Warning message is printed by the caller (_check_tool_availability)
-    # print(f"[WARN] Executable '{name}' not found in configured path ('{configured_path}') or system PATH.")
     return None
 
 def get_tool_path(tool_name: str) -> str:
     """
-    Gets the path for a required tool (e.g., 'ffmpeg', 'yt-dlp'),
-    checking constants for a configured path first, then the system PATH.
+    Получает путь для необходимого инструмента (например, 'ffmpeg', 'yt-dlp'),
+    проверяя сначала константы на наличие настроенного пути, затем системный PATH.
 
     Args:
-        tool_name: The name of the tool.
+        tool_name: Имя инструмента.
 
     Returns:
-        The full path to the executable.
+        Полный путь к исполняемому файлу.
 
     Raises:
-        FileNotFoundError: If the tool cannot be found.
+        FileNotFoundError: Если инструмент не найден.
     """
-    # Dynamically get the constant variable name (e.g., FFMPEG_PATH)
-    # Need to import constants here
     import constants
     path_const_name = f"{tool_name.upper()}_PATH"
     configured_path = getattr(constants, path_const_name, None)
@@ -75,10 +65,28 @@ def get_tool_path(tool_name: str) -> str:
     path = find_executable(tool_name, configured_path)
     if not path:
         error_message = (
-            f"Required tool '{tool_name}' not found.\n"
-            f"Please ensure it is installed and added to your system's PATH environment variable.\n"
-            f"Alternatively, you can specify the full path to the executable "
-            f"in the 'constants.py' file using the variable '{path_const_name}'."
+            f"Необходимый инструмент '{tool_name}' не найден.\n"
+            f"Убедитесь, что он установлен и добавлен в переменную среды PATH вашей системы.\n"
+            f"Либо укажите полный путь к исполняемому файлу "
+            f"в файле 'constants.py' с помощью переменной '{path_const_name}'."
         )
         raise FileNotFoundError(error_message)
     return path
+
+def is_valid_time_format(time_str: str) -> bool:
+    """
+    Проверяет, соответствует ли строка формату HH:MM:SS или HH:MM:SS.ms.
+    """
+    pattern = re.compile(r"^\d{2}:\d{2}:\d{2}(\.\d{1,3})?$")
+    return bool(pattern.match(time_str))
+
+def generate_trimmed_filename(input_path: str, start_time: str, end_time: str) -> str:
+    """
+    Генерирует имя выходного файла для обрезанного медиа.
+    Пример: input.mp4 -> input_trimmed_00-01-00_00-05-30.mp4
+    """
+    base, ext = os.path.splitext(input_path)
+    # Очистка временных строк для имени файла
+    start_clean = start_time.replace(":", "-").replace(".", "-")
+    end_clean = end_time.replace(":", "-").replace(".", "-")
+    return f"{base}_trimmed_{start_clean}_{end_clean}{ext}"
