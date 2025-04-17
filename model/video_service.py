@@ -8,6 +8,7 @@ from commands.merge_audio import MergeAudio
 from model.processing_context import ProcessingContext # Use the context object
 from utils.utils import find_executable
 import constants
+import os
 from typing import List, Dict, Any, Optional, Type
 
 class VideoService:
