@@ -13,6 +13,7 @@ __pycache__/
 
 merge-py.sh
 combined.txt
+video
 # Distribution / packaging
 .Python
 build/
