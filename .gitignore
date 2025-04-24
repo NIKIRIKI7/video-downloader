@@ -17,6 +17,7 @@ video
 video_output
 merge-py.bat
 combined_py.txt
+output.txt
 # Distribution / packaging
 .Python
 build/

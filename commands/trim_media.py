@@ -1,107 +1,85 @@
-from commands.base_command import ActionCommand, LoggerCallable # Импортируем LoggerCallable
-from utils.utils import get_tool_path
+# File: commands/trim_media.py
+
+from commands.base_command import LoggerCallable
+from utils.utils import get_tool_path, is_valid_time_format
+from pathlib import Path
 import subprocess
-import os
-# Не импортируем ProcessingContext, так как эта команда работает иначе
 
-class TrimMedia: # Не наследуем от ActionCommand, т.к. сигнатура execute другая
-    """Команда для обрезки видео или аудио файла с использованием ffmpeg."""
+class TrimMedia:
+    """Команда для обрезки медиа-файла (видео или аудио) с помощью ffmpeg."""
 
-    def __init__(self, logger: LoggerCallable):
+    def __init__(self, logger: LoggerCallable) -> None:
+        """Инициализация с передачей функции логирования."""
+        self.log = logger
+
+    def execute(self, input_path: Path | str, output_path: Path | str, start_time: str, end_time: str) -> None:
         """
-        Инициализирует команду.
+        Обрезает медиа-файл с timecode start_time до end_time без перекодирования.
 
         Args:
-            logger: Функция для логирования сообщений.
-        """
-        self.log: LoggerCallable = logger
-
-    def execute(self, input_path: str, output_path: str, start_time: str, end_time: str) -> None:
-        """
-        Выполняет обрезку медиафайла.
-
-        Args:
-            input_path: Путь к входному файлу.
-            output_path: Путь к выходному файлу.
+            input_path: Путь к входному файлу (Path или str).
+            output_path: Путь к выходному файлу (Path или str).
             start_time: Время начала в формате HH:MM:SS[.ms].
             end_time: Время окончания в формате HH:MM:SS[.ms].
 
         Raises:
-            FileNotFoundError: Если ffmpeg или входной файл не найден.
-            ValueError: Если временные метки некорректны.
-            subprocess.CalledProcessError: Если ffmpeg завершается с ошибкой.
-            Exception: При других неожиданных ошибках.
+            FileNotFoundError: если файл не существует или ffmpeg не найден.
+            ValueError: если форматы времени некорректны.
+            subprocess.CalledProcessError: если ffmpeg завершается с ошибкой.
         """
-        self.log(f"[TRIM] Начало обрезки файла: {input_path}")
-        self.log(f"[TRIM] Время начала: {start_time}")
-        self.log(f"[TRIM] Время окончания: {end_time}")
-        self.log(f"[TRIM] Выходной файл: {output_path}")
+        inp = Path(input_path)
+        out = Path(output_path)
 
-        # --- Валидация ---
-        if not os.path.exists(input_path):
-            self.log(f"[TRIM][ERROR] Входной файл не найден: {input_path}")
-            raise FileNotFoundError(f"Входной файл не найден: {input_path}")
+        self.log(f"[TRIM] Входной файл: {inp}")
+        self.log(f"[TRIM] Выходной файл: {out}")
+        self.log(f"[TRIM] Начало: {start_time}, Конец: {end_time}")
 
-        # Валидация времени была сделана в GUI, но проверим еще раз на всякий случай
-        from utils.utils import is_valid_time_format
+        # Проверка наличия входного файла
+        if not inp.exists():
+            self.log(f"[TRIM][ERROR] Входной файл не найден: {inp}")
+            raise FileNotFoundError(f"Входной файл не найден: {inp}")
+
+        # Валидация формата времени
         if not is_valid_time_format(start_time):
-             self.log(f"[TRIM][ERROR] Неверный формат времени начала: {start_time}")
-             raise ValueError(f"Неверный формат времени начала: {start_time}")
+            self.log(f"[TRIM][ERROR] Неверный формат времени начала: {start_time}")
+            raise ValueError(f"Неверный формат времени начала: {start_time}")
         if not is_valid_time_format(end_time):
             self.log(f"[TRIM][ERROR] Неверный формат времени окончания: {end_time}")
             raise ValueError(f"Неверный формат времени окончания: {end_time}")
 
-        # Дополнительно: можно сравнить start_time и end_time, но ffmpeg сам справится
+        # Создаем директорию выхода, если нужно
+        out_dir = out.parent
+        if out_dir and not out_dir.exists():
+            out_dir.mkdir(parents=True, exist_ok=True)
+            self.log(f"[TRIM][INFO] Создана директория для выхода: {out_dir}")
 
-        output_dir = os.path.dirname(output_path)
-        if output_dir and not os.path.exists(output_dir):
-            try:
-                os.makedirs(output_dir)
-                self.log(f"[TRIM][INFO] Создана выходная директория: {output_dir}")
-            except OSError as e:
-                self.log(f"[TRIM][ERROR] Не удалось создать выходную директорию {output_dir}: {e}")
-                raise
+        # ffmpeg путь
+        ffmpeg = get_tool_path('ffmpeg')
 
-        if os.path.exists(output_path):
-             self.log(f"[TRIM][WARN] Выходной файл уже существует: {output_path}. Он будет перезаписан.")
-             # ffmpeg с флагом -y перезапишет его
-
-        ffmpeg_path = get_tool_path('ffmpeg') # Вызовет FileNotFoundError, если не найден
-
-        # --- Команда FFmpeg ---
+        # Собираем команду
         cmd = [
-            ffmpeg_path,
-            "-y",               # Перезаписывать выходной файл без запроса
-            "-i", input_path,   # Входной файл
-            "-ss", start_time,  # Время начала
-            "-to", end_time,    # Время окончания
-            "-c", "copy",       # Копировать кодеки (быстро, без перекодирования)
-                                # Если копирование вызывает проблемы, можно указать кодеки:
-                                # "-c:v", "libx264", "-c:a", "aac",
-            output_path         # Выходной файл
+            str(ffmpeg), '-y',
+            '-i', str(inp),
+            '-ss', start_time,
+            '-to', end_time,
+            '-c', 'copy',
+            str(out)
         ]
-        self.log(f"[TRIM][DEBUG] Выполнение команды FFmpeg: {' '.join(cmd)}")
+        self.log(f"[TRIM][DEBUG] Выполнение: {' '.join(cmd)}")
 
+        # Запуск ffmpeg
         try:
-            process = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8', errors='replace')
-            # ffmpeg часто выводит информацию в stderr даже при успехе
-            self.log(f"[TRIM][DEBUG] ffmpeg stderr:\n{process.stderr}")
-            self.log(f"[TRIM][DEBUG] ffmpeg stdout:\n{process.stdout}")
-
-
-            if os.path.exists(output_path):
-                self.log(f"[TRIM][INFO] Файл успешно обрезан: {output_path}")
+            proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            # ffmpeg пишет инфо в stderr
+            self.log(f"[TRIM][DEBUG] ffmpeg stderr:\n{proc.stderr}")
+            if out.exists():
+                self.log(f"[TRIM][INFO] Обрезка успешна: {out}")
             else:
-                # Это странная ситуация: ffmpeg завершился успешно, но файла нет
-                self.log(f"[TRIM][ERROR] Выходной файл не найден после успешного выполнения ffmpeg: {output_path}")
-                raise FileNotFoundError(f"Выходной файл не найден после успешного выполнения ffmpeg: {output_path}")
-
+                self.log(f"[TRIM][ERROR] Выходной файл не найден после обрезки: {out}")
+                raise FileNotFoundError(f"Выходной файл не найден: {out}")
         except subprocess.CalledProcessError as e:
-            self.log(f"[TRIM][ERROR] ffmpeg завершился с ошибкой во время обрезки: {e}")
-            self.log(f"[TRIM][ERROR] Команда: {' '.join(cmd)}")
-            stderr_output = e.stderr.decode('utf-8', errors='replace') if isinstance(e.stderr, bytes) else e.stderr
-            self.log(f"[TRIM][ERROR] Stderr: {stderr_output}")
-            raise # Перевыбрасываем ошибку выполнения процесса
-        except Exception as e:
-            self.log(f"[TRIM][ERROR] Неожиданная ошибка во время обрезки: {type(e).__name__} - {e}")
-            raise # Перевыбрасываем другие ошибки
+            stderr = e.stderr or ''
+            self.log(f"[TRIM][ERROR] ffmpeg error: {stderr}")
+            raise
+        except Exception:
+            raise

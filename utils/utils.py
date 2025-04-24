@@ -1,26 +1,26 @@
-# File: utils/utils.py
-
 import os
+from pathlib import Path
 import shutil
 from typing import Optional
-import re # Добавлено для валидации времени
+import re
 
-# import constants
 
-def ensure_dir(path: str) -> None:
+def ensure_dir(path: Path | str) -> None:
     """
     Создает директорию по указанному пути, если она не существует.
+    Принимает Path или строку.
     Вызывает OSError при ошибке создания.
     """
-    if not os.path.isdir(path):
-        try:
-            os.makedirs(path, exist_ok=True)
-            print(f"[INFO] Создана директория: {path}")
-        except OSError as e:
-            print(f"[ERROR] Не удалось создать директорию {path}: {e}")
-            raise
+    p = Path(path)
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+        print(f"[INFO] Создана директория: {p}")
+    except OSError as e:
+        print(f"[ERROR] Не удалось создать директорию {p}: {e}")
+        raise
 
-def find_executable(name: str, configured_path: Optional[str]) -> Optional[str]:
+
+def find_executable(name: str, configured_path: Optional[str]) -> Optional[Path]:
     """
     Находит путь к исполняемому файлу для данного инструмента.
     Сначала проверяет настроенный путь, затем ищет в системном PATH.
@@ -30,63 +30,49 @@ def find_executable(name: str, configured_path: Optional[str]) -> Optional[str]:
         configured_path: Путь, указанный в constants.py (или None/пустой).
 
     Returns:
-        Полный путь к исполняемому файлу, если он найден и исполняем, иначе None.
+        Path к исполняемому файлу, если он найден и исполняем, иначе None.
     """
-    if configured_path and os.path.isfile(configured_path):
-        if os.access(configured_path, os.X_OK):
-             return configured_path
-        else:
-            print(f"[WARN] Настроенный путь для '{name}' существует, но не является исполняемым: {configured_path}")
+    from shutil import which
 
-    found_path = shutil.which(name)
-    if found_path:
-        return found_path
+    if configured_path:
+        cfg = Path(configured_path)
+        if cfg.is_file() and os.access(cfg, os.X_OK):
+            return cfg
+    system_path = which(name)
+    return Path(system_path) if system_path else None
 
-    return None
 
-def get_tool_path(tool_name: str) -> str:
+def get_tool_path(tool_name: str) -> Path:
     """
-    Получает путь для необходимого инструмента (например, 'ffmpeg', 'yt-dlp'),
-    проверяя сначала константы на наличие настроенного пути, затем системный PATH.
-
-    Args:
-        tool_name: Имя инструмента.
-
-    Returns:
-        Полный путь к исполняемому файлу.
-
-    Raises:
-        FileNotFoundError: Если инструмент не найден.
+    Возвращает Path к инструменту или бросает FileNotFoundError.
     """
     import constants
-    path_const_name = f"{tool_name.upper()}_PATH"
-    configured_path = getattr(constants, path_const_name, None)
+    path_const = getattr(constants, f"{tool_name.upper()}_PATH", None)
+    candidate = find_executable(tool_name, path_const)
+    if candidate and candidate.exists():
+        return candidate
+    raise FileNotFoundError(
+        f"Необходимый инструмент '{tool_name}' не найден. "
+        f"Проверьте PATH или укажите полный путь в constants.py"
+    )
 
-    path = find_executable(tool_name, configured_path)
-    if not path:
-        error_message = (
-            f"Необходимый инструмент '{tool_name}' не найден.\n"
-            f"Убедитесь, что он установлен и добавлен в переменную среды PATH вашей системы.\n"
-            f"Либо укажите полный путь к исполняемому файлу "
-            f"в файле 'constants.py' с помощью переменной '{path_const_name}'."
-        )
-        raise FileNotFoundError(error_message)
-    return path
 
 def is_valid_time_format(time_str: str) -> bool:
     """
-    Проверяет, соответствует ли строка формату HH:MM:SS или HH:MM:SS.ms.
+    Проверяет формат HH:MM:SS или HH:MM:SS.ms.
     """
     pattern = re.compile(r"^\d{2}:\d{2}:\d{2}(\.\d{1,3})?$")
     return bool(pattern.match(time_str))
 
-def generate_trimmed_filename(input_path: str, start_time: str, end_time: str) -> str:
+
+def generate_trimmed_filename(input_path: Path | str, start_time: str, end_time: str) -> str:
     """
     Генерирует имя выходного файла для обрезанного медиа.
     Пример: input.mp4 -> input_trimmed_00-01-00_00-05-30.mp4
     """
-    base, ext = os.path.splitext(input_path)
-    # Очистка временных строк для имени файла
-    start_clean = start_time.replace(":", "-").replace(".", "-")
-    end_clean = end_time.replace(":", "-").replace(".", "-")
+    p = Path(input_path)
+    base = p.stem
+    ext = p.suffix
+    start_clean = start_time.replace(':', '-').replace('.', '-')
+    end_clean = end_time.replace(':', '-').replace('.', '-')
     return f"{base}_trimmed_{start_clean}_{end_clean}{ext}"
